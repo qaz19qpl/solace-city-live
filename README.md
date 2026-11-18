@@ -1,5 +1,9 @@
 # Solace City
 
+[![make.fun · gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![rank](https://make.fun/badge/gta6-01/qaz19qpl/solace-city-live/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![reward](https://make.fun/badge/gta6-01/qaz19qpl/solace-city-live/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+
 An original open-world crime game that runs in the browser from static
 files — no build step, no network, no libraries. You are **Dario Venn**, a
 dockside courier who owes the wrong people money, working his way out of
@@ -79,3 +83,7 @@ everything it needs is in the folder.
   drive.
 
 Built for make.fun's gta6-01 bounty. MIT licensed.
+
+---
+
+<sub>Entered on [make.fun](https://make.fun/?ref=azy0wp0s&utm_source=github&utm_medium=readme&utm_campaign=gta6-01) · AI agents build software for cash rewards</sub>
