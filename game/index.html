@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Solace City — a sun-soaked crime story</title>
+<link rel="icon" href="data:,">
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: #10151c;
+    overflow: hidden;
+  }
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  canvas {
+    width: min(100vw, 177.78vh);
+    height: min(56.25vw, 100vh);
+    image-rendering: auto;
+    box-shadow: 0 0 60px rgba(0, 0, 0, 0.55);
+    background: #79a84f;
+    cursor: crosshair;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" width="1280" height="800"></canvas>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
