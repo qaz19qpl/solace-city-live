@@ -1,6 +1,14 @@
-// effects.js — the juice: impact sparks, dust, tyre smoke, skid marks that
-// fade in the sun, floating "+$250" texts and camera shake. Purely visual;
-// nothing here touches game state.
+// effects.js — the juice, and only the juice.
+//
+// Impact sparks, dust, tyre smoke, skid marks that fade in the sun,
+// floating "+$250" texts and camera shake. Nothing here reads or writes
+// game state; systems call into it and the renderer draws it back out.
+// Particle motion uses Math.random on purpose: it is decoration, and a
+// little noise each frame is cheaper than routing the seeded RNG through.
+//
+// Three collections, three updates, three draws. Bursts are the only
+// spawn path: every named effect is a preset of count, colour, speed,
+// life, size and drag handed to `burst`.
 
 import { clamp } from './random.js';
 
@@ -12,28 +20,46 @@ export class Effects {
     this.shakeMag = 0;
   }
 
+  // Ask the camera to shudder by `amount` pixels (decays on its own).
   shake(amount) {
     this.shakeMag = Math.min(16, this.shakeMag + amount);
   }
 
+  // One particle, rolled out of a burst's preset.
+  spawnParticle(x, y, opts, angle) {
+    const a = angle + (Math.random() - 0.5) * opts.spread;
+    const s = opts.speed * (0.35 + Math.random() * 0.85);
+    const lived = opts.life * (0.6 + Math.random() * 0.7);
+    this.particles.push({
+      x, y,
+      vx: Math.cos(a) * s,
+      vy: Math.sin(a) * s,
+      life: lived,
+      maxLife: lived,
+      size: opts.size * (0.6 + Math.random() * 0.8),
+      color: opts.color,
+      gravity: opts.gravity,
+      drag: opts.drag,
+    });
+  }
+
+  // The one spawn path every burst funnels through.
   burst(x, y, opts = {}) {
-    const {
-      count = 10, color = '#ffd76e', speed = 130, life = 0.45,
-      size = 2.4, gravity = 0, spread = Math.PI * 2, angle = 0, drag = 2.2,
-    } = opts;
-    for (let i = 0; i < count; i++) {
+    const preset = {
+      count: 10,
+      color: '#ffd76e',
+      speed: 130,
+      life: 0.45,
+      size: 2.4,
+      gravity: 0,
+      spread: Math.PI * 2,
+      angle: 0,
+      drag: 2.2,
+      ...opts,
+    };
+    for (let i = 0; i < preset.count; i++) {
       if (this.particles.length > 700) return;
-      const a = angle + (Math.random() - 0.5) * spread;
-      const s = speed * (0.35 + Math.random() * 0.85);
-      this.particles.push({
-        x, y,
-        vx: Math.cos(a) * s,
-        vy: Math.sin(a) * s,
-        life: life * (0.6 + Math.random() * 0.7),
-        maxLife: life,
-        size: size * (0.6 + Math.random() * 0.8),
-        color, gravity, drag,
-      });
+      this.spawnParticle(x, y, preset, preset.angle);
     }
   }
 
@@ -54,8 +80,8 @@ export class Effects {
     this.burst(x, y, { count: 4, color: '#ffe9a3', speed: 160, life: 0.09, size: 2.6, angle, spread: 0.5, drag: 6 });
   }
 
+  // A knocked-down scuffle puff — comic dust, no gore.
   bloodlessPuff(x, y) {
-    // A knocked-down scuffle puff — comic dust, no gore.
     this.burst(x, y, { count: 8, color: 'rgba(230,220,200,0.6)', speed: 70, life: 0.4, size: 4, drag: 3 });
   }
 
@@ -68,7 +94,7 @@ export class Effects {
     this.texts.push({ x, y, text, color, life: 1.5 });
   }
 
-  update(dt) {
+  updateParticles(dt) {
     for (let i = this.particles.length - 1; i >= 0; i--) {
       const p = this.particles[i];
       p.life -= dt;
@@ -82,19 +108,33 @@ export class Effects {
       p.x += p.vx * dt;
       p.y += p.vy * dt;
     }
+  }
+
+  updateSkids(dt) {
     for (let i = this.skids.length - 1; i >= 0; i--) {
-      this.skids[i].alpha -= dt * 0.012;
-      if (this.skids[i].alpha <= 0.02) this.skids.splice(i, 1);
+      const skid = this.skids[i];
+      skid.alpha -= dt * 0.012;
+      if (skid.alpha <= 0.02) this.skids.splice(i, 1);
     }
+  }
+
+  updateTexts(dt) {
     for (let i = this.texts.length - 1; i >= 0; i--) {
       const t = this.texts[i];
       t.life -= dt;
       t.y -= 34 * dt;
       if (t.life <= 0) this.texts.splice(i, 1);
     }
+  }
+
+  update(dt) {
+    this.updateParticles(dt);
+    this.updateSkids(dt);
+    this.updateTexts(dt);
     this.shakeMag = Math.max(0, this.shakeMag - dt * 26);
   }
 
+  // This frame's camera offset from the current shake.
   shakeOffset() {
     if (this.shakeMag <= 0.1) return { x: 0, y: 0 };
     return {

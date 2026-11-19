@@ -1,7 +1,14 @@
-// police.js — the Solace City Police Department. Crimes the public sees
-// build heat; heat becomes stars; stars become interceptors on the road
-// graph and officers on foot. Stay unseen and the heat bleeds away. Get
-// held at a standstill with an officer on you and the bust meter fills.
+// police.js — the Solace City Police Department.
+//
+// Crimes the public sees build heat; heat becomes stars; stars become
+// interceptors on the road graph and officers on foot. Stay unseen and
+// the heat bleeds away. Get held at a standstill with an officer on you
+// and the bust meter fills. Interceptors that cannot see you work the
+// avenue grid toward your nearest intersection, breadth-first.
+//
+// The department is one object with a small fleet (cars) and a roster
+// (cops on foot). Both lists mirror entries in the shared S.cars /
+// S.cops arrays, so the renderer and the collision code see them too.
 
 import { makeCar, stepCar, POLICE_MODEL, speedOf, carSpeed } from './cars.js';
 import { angleDelta, angleTo, clamp, distance, turnToward } from './random.js';
@@ -26,6 +33,7 @@ export function makeCop(rng, x, y) {
     target: null,
     waitT: 0,
     downT: 0,
+    walkPhase: 0,
     shirt: '#22355e',
     skin: '#d9a066',
     pants: '#1b2740',
@@ -36,12 +44,13 @@ export function makeCop(rng, x, y) {
 }
 
 // Breadth-first next step over the avenue grid (30 nodes; trivial cost).
+// Returns the intersection after `from` on a shortest path to `to`.
 function nextNodeToward(city, from, to) {
   if (from.i === to.i && from.j === to.j) return null;
   const key = (i, j) => i * 10 + j;
-  const prev = new Map();
+  const cameFrom = new Map();
   const queue = [[from.i, from.j]];
-  prev.set(key(from.i, from.j), null);
+  cameFrom.set(key(from.i, from.j), null);
   while (queue.length) {
     const [ci, cj] = queue.shift();
     if (ci === to.i && cj === to.j) break;
@@ -49,24 +58,43 @@ function nextNodeToward(city, from, to) {
       const ni = ci + di;
       const nj = cj + dj;
       if (ni < 0 || nj < 0 || ni >= city.vx.length || nj >= city.hy.length) continue;
-      if (prev.has(key(ni, nj))) continue;
-      prev.set(key(ni, nj), [ci, cj]);
+      if (cameFrom.has(key(ni, nj))) continue;
+      cameFrom.set(key(ni, nj), [ci, cj]);
       queue.push([ni, nj]);
     }
   }
   let cur = [to.i, to.j];
-  let before = prev.get(key(cur[0], cur[1]));
+  let before = cameFrom.get(key(cur[0], cur[1]));
   if (!before) return null;
   while (before && !(before[0] === from.i && before[1] === from.j)) {
     cur = before;
-    before = prev.get(key(cur[0], cur[1]));
+    before = cameFrom.get(key(cur[0], cur[1]));
     if (!before) return null;
   }
   return { i: cur[0], j: cur[1] };
 }
 
+// Where should this interceptor aim? Direct pursuit when it can see the
+// player, otherwise the next grid node toward the player's intersection.
+function pursuitTarget(S, car) {
+  const p = S.player;
+  const d = distance(car.x, car.y, p.x, p.y);
+  const seen = d < 460 && S.city.losClear(car.x, car.y, p.x, p.y);
+  if (seen || d < 240) {
+    // Lead the target a little.
+    const lead = p.car ? 0.32 : 0.1;
+    return { x: p.x + p.vx * lead, y: p.y + p.vy * lead, direct: true, d };
+  }
+  const from = S.city.nearestIntersection(car.x, car.y);
+  const to = S.city.nearestIntersection(p.x, p.y);
+  const next = nextNodeToward(S.city, from, to);
+  const node = next ? S.city.intersection(next.i, next.j) : { x: p.x, y: p.y };
+  if (distance(car.x, car.y, node.x, node.y) < 34) return { x: p.x, y: p.y, direct: false, d };
+  return { x: node.x, y: node.y, direct: false, d };
+}
+
 export function createPolice() {
-  return {
+  const dept = {
     cars: [],
     cops: [],
     spawnT: 0,
@@ -138,48 +166,30 @@ export function createPolice() {
       this.updateCops(dt, S, stars);
       this.updateBust(dt, S, stars);
 
-      const anySirenNear = stars > 0 && this.cars.some((c) => !c.wrecked && distance(c.x, c.y, S.player.x, S.player.y) < 760);
-      S.audio.setSiren(anySirenNear);
+      const sirenNear = stars > 0 && this.cars.some((c) => !c.wrecked && distance(c.x, c.y, S.player.x, S.player.y) < 760);
+      S.audio.setSiren(sirenNear);
     },
 
     driveCars(dt, S, stars) {
       const p = S.player;
       for (const car of this.cars) {
         if (car.wrecked) continue;
-        const d = distance(car.x, car.y, p.x, p.y);
-        const seen = d < 460 && S.city.losClear(car.x, car.y, p.x, p.y);
-        let tx;
-        let ty;
+        const target = pursuitTarget(S, car);
         let throttle = 0.92;
-        if (seen || d < 240) {
-          // Direct pursuit, leading the target a little.
-          const lead = p.car ? 0.32 : 0.1;
-          tx = p.x + p.vx * lead;
-          ty = p.y + p.vy * lead;
-          if (!p.car && d < 64) throttle = 0; // don't run him down, box him in
-          if (p.car && d < 40) throttle = 0.55;
-        } else {
-          // Work the grid toward the player's nearest intersection.
-          const from = S.city.nearestIntersection(car.x, car.y);
-          const to = S.city.nearestIntersection(p.x, p.y);
-          const next = nextNodeToward(S.city, from, to);
-          const node = next ? S.city.intersection(next.i, next.j) : { x: p.x, y: p.y };
-          tx = node.x;
-          ty = node.y;
-          if (distance(car.x, car.y, tx, ty) < 34) {
-            tx = p.x;
-            ty = p.y;
-          }
+        if (target.direct) {
+          if (!p.car && target.d < 64) throttle = 0; // don't run him down, box him in
+          if (p.car && target.d < 40) throttle = 0.55;
         }
-        const want = Math.atan2(ty - car.y, tx - car.x);
+        const want = Math.atan2(target.y - car.y, target.x - car.x);
         const delta = angleDelta(car.angle, want);
         const steer = clamp(delta * 2.6, -1, 1);
-        if (Math.abs(delta) > 1.9 && speedOf(car) > 60) throttle = -0.5; // handbrake-turn energy, minus the handbrake
-        const impact = stepCar(car, { throttle, steer, handbrake: Math.abs(delta) > 1.1 && speedOf(car) > 200 }, dt, S.city, S.effects);
+        if (Math.abs(delta) > 1.9 && speedOf(car) > 60) throttle = -0.5;
+        const handbrake = Math.abs(delta) > 1.1 && speedOf(car) > 200;
+        const impact = stepCar(car, { throttle, steer, handbrake }, dt, S.city, S.effects);
         if (impact > 120) S.audio.crash(0.4);
 
         // An officer steps out when the car stops near an on-foot player.
-        if (!car.droppedCop && stars >= 2 && !p.car && d < 90 && speedOf(car) < 30) {
+        if (!car.droppedCop && stars >= 2 && !p.car && target.d < 90 && speedOf(car) < 30) {
           car.droppedCop = true;
           const cop = makeCop(S.rng, car.x + 18, car.y + 10);
           this.cops.push(cop);
@@ -191,7 +201,8 @@ export function createPolice() {
     updateCops(dt, S, stars) {
       const p = S.player;
       // Reinforce on foot at three stars and up.
-      if (stars >= 3 && this.cops.filter((c) => c.state === 'chase').length < stars - 1) {
+      const onFoot = this.cops.filter((c) => c.state === 'chase').length;
+      if (stars >= 3 && onFoot < stars - 1) {
         const car = this.cars.find((c) => !c.wrecked);
         if (car && distance(car.x, car.y, p.x, p.y) < 380) {
           const cop = makeCop(S.rng, car.x - 16, car.y - 12);
@@ -201,6 +212,11 @@ export function createPolice() {
       }
       for (let i = this.cops.length - 1; i >= 0; i--) {
         const cop = this.cops[i];
+        const remove = () => {
+          this.cops.splice(i, 1);
+          const idx = S.cops.indexOf(cop);
+          if (idx >= 0) S.cops.splice(idx, 1);
+        };
         if (cop.state === 'down') {
           cop.downT -= dt;
           if (cop.downT <= 0) {
@@ -211,26 +227,20 @@ export function createPolice() {
         }
         if (cop.state === 'dead') {
           cop.corpseT -= dt;
-          if (cop.corpseT <= 0) {
-            this.cops.splice(i, 1);
-            const idx = S.cops.indexOf(cop);
-            if (idx >= 0) S.cops.splice(idx, 1);
-          }
+          if (cop.corpseT <= 0) remove();
           continue;
         }
         const d = distance(cop.x, cop.y, p.x, p.y);
         if (stars === 0 || d > 1500) {
-          this.cops.splice(i, 1);
-          const idx = S.cops.indexOf(cop);
-          if (idx >= 0) S.cops.splice(idx, 1);
+          remove();
           continue;
         }
         if (d > 12) {
-          const a = angleTo(cop.x, cop.y, p.x, p.y);
-          cop.angle = turnToward(cop.angle, a, 9 * dt);
+          const heading = angleTo(cop.x, cop.y, p.x, p.y);
+          cop.angle = turnToward(cop.angle, heading, 9 * dt);
           const speed = d > 200 ? 214 : 178;
-          cop.x += Math.cos(a) * speed * dt;
-          cop.y += Math.sin(a) * speed * dt;
+          cop.x += Math.cos(heading) * speed * dt;
+          cop.y += Math.sin(heading) * speed * dt;
           cop.speed = speed;
           cop.walkPhase = (cop.walkPhase || 0) + dt * speed * 0.11;
           const pos = { x: cop.x, y: cop.y };
@@ -244,6 +254,7 @@ export function createPolice() {
       }
     },
 
+    // The bust meter: held still with an officer on you, it fills.
     updateBust(dt, S, stars) {
       const W = S.wanted;
       const p = S.player;
@@ -257,14 +268,9 @@ export function createPolice() {
         for (const cop of this.cops) {
           if (cop.state === 'chase' && distance(cop.x, cop.y, p.x, p.y) < 30) held = true;
         }
-        if (!p.car) {
-          for (const car of this.cars) {
-            if (!car.wrecked && distance(car.x, car.y, p.x, p.y) < 56 && speedOf(car) < 40) held = true;
-          }
-        } else {
-          for (const car of this.cars) {
-            if (!car.wrecked && distance(car.x, car.y, p.x, p.y) < 58 && speedOf(car) < 40) held = true;
-          }
+        const near = p.car ? 58 : 56;
+        for (const car of this.cars) {
+          if (!car.wrecked && distance(car.x, car.y, p.x, p.y) < near && speedOf(car) < 40) held = true;
         }
       }
       if (held) {
@@ -297,4 +303,5 @@ export function createPolice() {
       S.audio.setSiren(false);
     },
   };
+  return dept;
 }

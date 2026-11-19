@@ -1,7 +1,13 @@
-// audio.js — every sound in Solace City is synthesized with WebAudio: no
-// audio files exist. A tiny engine hum that follows your speed, a two-tone
-// siren, noise-burst gunshots, honks, crashes, a cash register cha-ching
-// and a lazy coastal music loop built from scheduled oscillators.
+// audio.js — every sound in Solace City is synthesized with WebAudio.
+// There are no audio files. A tiny engine hum that follows your speed, a
+// two-tone siren, noise-burst gunshots, honks, crashes, a cash-register
+// cha-ching and a lazy coastal music loop built from scheduled oscillators.
+//
+// The engine only exists after a user gesture (init is called from one),
+// and every method is wrapped so a missing AudioContext can never break
+// the game. Two primitives do the work — `tone` (one oscillator note)
+// and `noise` (one filtered noise burst) — and every named sound is a
+// short arrangement of those two.
 
 export class SoundEngine {
   constructor() {
@@ -44,6 +50,7 @@ export class SoundEngine {
     }
   }
 
+  // One oscillator note with an exponential decay.
   tone(freq, dur, type = 'sine', vol = 0.2, when = 0, slideTo = null) {
     if (!this.ctx || this.muted) return;
     try {
@@ -61,6 +68,7 @@ export class SoundEngine {
     } catch { /* sound is decoration; never break the game */ }
   }
 
+  // A burst of filtered noise (shots, crashes, punches).
   noise(dur, vol = 0.3, freq = 1200, when = 0) {
     if (!this.ctx || this.muted) return;
     try {
@@ -82,86 +90,135 @@ export class SoundEngine {
     } catch { /* ignore */ }
   }
 
+  // --- named sounds: short arrangements of tone and noise --------------
+
   click() { this.tone(660, 0.06, 'square', 0.08); }
+
   cash() {
     this.tone(988, 0.09, 'sine', 0.16);
     this.tone(1319, 0.16, 'sine', 0.16, 0.07);
   }
-  pickup() { this.tone(523, 0.08, 'triangle', 0.14); this.tone(784, 0.12, 'triangle', 0.14, 0.06); }
-  shot() { this.noise(0.11, 0.32, 2600); this.tone(160, 0.08, 'square', 0.1, 0, 60); }
+
+  pickup() {
+    this.tone(523, 0.08, 'triangle', 0.14);
+    this.tone(784, 0.12, 'triangle', 0.14, 0.06);
+  }
+
+  shot() {
+    this.noise(0.11, 0.32, 2600);
+    this.tone(160, 0.08, 'square', 0.1, 0, 60);
+  }
+
   punch() { this.noise(0.07, 0.2, 700); }
-  honk() { this.tone(370, 0.16, 'square', 0.07); this.tone(466, 0.16, 'square', 0.05); }
+
+  honk() {
+    this.tone(370, 0.16, 'square', 0.07);
+    this.tone(466, 0.16, 'square', 0.05);
+  }
+
   crash(intensity = 1) {
     this.noise(0.22, 0.22 * intensity, 500);
     this.tone(90, 0.2, 'sine', 0.2 * intensity, 0, 40);
   }
+
   skid() { this.noise(0.1, 0.05, 3000); }
+
   missionSting() {
     this.tone(392, 0.12, 'triangle', 0.15);
     this.tone(523, 0.12, 'triangle', 0.15, 0.1);
     this.tone(659, 0.22, 'triangle', 0.15, 0.2);
   }
+
   failSting() {
     this.tone(330, 0.16, 'triangle', 0.14);
     this.tone(262, 0.26, 'triangle', 0.14, 0.14);
   }
 
-  // Continuous engine note while driving; speedNorm is 0..1.
+  // --- the engine drone ----------------------------------------------------
+
+  startEngine() {
+    this.engineOsc = this.ctx.createOscillator();
+    this.engineOsc.type = 'sawtooth';
+    this.engineGain = this.ctx.createGain();
+    this.engineGain.gain.value = 0;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 420;
+    this.engineOsc.connect(filter).connect(this.engineGain).connect(this.master);
+    this.engineOsc.start();
+  }
+
+  stopEngine() {
+    this.engineGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.08);
+    const osc = this.engineOsc;
+    window.setTimeout(() => { try { osc.stop(); } catch { /* done */ } }, 300);
+    this.engineOsc = null;
+  }
+
+  // Continuous engine note while driving; speedNorm is 0..1, null stops it.
   setEngine(speedNorm) {
     if (!this.ctx) return;
     try {
       if (speedNorm === null) {
-        if (this.engineOsc) {
-          this.engineGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.08);
-          const osc = this.engineOsc;
-          window.setTimeout(() => { try { osc.stop(); } catch { /* done */ } }, 300);
-          this.engineOsc = null;
-        }
+        if (this.engineOsc) this.stopEngine();
         return;
       }
-      if (!this.engineOsc) {
-        this.engineOsc = this.ctx.createOscillator();
-        this.engineOsc.type = 'sawtooth';
-        this.engineGain = this.ctx.createGain();
-        this.engineGain.gain.value = 0;
-        const filter = this.ctx.createBiquadFilter();
-        filter.type = 'lowpass';
-        filter.frequency.value = 420;
-        this.engineOsc.connect(filter).connect(this.engineGain).connect(this.master);
-        this.engineOsc.start();
-      }
+      if (!this.engineOsc) this.startEngine();
       const freq = 55 + speedNorm * 165;
       this.engineOsc.frequency.setTargetAtTime(freq, this.ctx.currentTime, 0.06);
-      this.engineGain.gain.setTargetAtTime(this.muted ? 0 : 0.05 + speedNorm * 0.05, this.ctx.currentTime, 0.09);
+      const vol = this.muted ? 0 : 0.05 + speedNorm * 0.05;
+      this.engineGain.gain.setTargetAtTime(vol, this.ctx.currentTime, 0.09);
     } catch { /* ignore */ }
   }
 
+  // --- the two-tone siren --------------------------------------------------
+
+  startSiren() {
+    this.sirenOsc = this.ctx.createOscillator();
+    this.sirenOsc.type = 'triangle';
+    this.sirenOsc.frequency.value = 760;
+    this.sirenLfo = this.ctx.createOscillator();
+    this.sirenLfo.type = 'square';
+    this.sirenLfo.frequency.value = 0.9;
+    const lfoGain = this.ctx.createGain();
+    lfoGain.gain.value = 140;
+    this.sirenLfo.connect(lfoGain).connect(this.sirenOsc.frequency);
+    this.sirenGain = this.ctx.createGain();
+    this.sirenGain.gain.value = this.muted ? 0 : 0.035;
+    this.sirenOsc.connect(this.sirenGain).connect(this.master);
+    this.sirenOsc.start();
+    this.sirenLfo.start();
+  }
+
+  stopSiren() {
+    const osc = this.sirenOsc;
+    const lfo = this.sirenLfo;
+    window.setTimeout(() => { try { osc.stop(); lfo.stop(); } catch { /* done */ } }, 60);
+    this.sirenOsc = null;
+    this.sirenLfo = null;
+  }
+
+  // The two-tone siren: one triangle wave wobbling on a square LFO.
   setSiren(on) {
     if (!this.ctx) return;
     try {
-      if (on && !this.sirenOsc) {
-        this.sirenOsc = this.ctx.createOscillator();
-        this.sirenOsc.type = 'triangle';
-        this.sirenOsc.frequency.value = 760;
-        this.sirenLfo = this.ctx.createOscillator();
-        this.sirenLfo.type = 'square';
-        this.sirenLfo.frequency.value = 0.9;
-        const lfoGain = this.ctx.createGain();
-        lfoGain.gain.value = 140;
-        this.sirenLfo.connect(lfoGain).connect(this.sirenOsc.frequency);
-        this.sirenGain = this.ctx.createGain();
-        this.sirenGain.gain.value = this.muted ? 0 : 0.035;
-        this.sirenOsc.connect(this.sirenGain).connect(this.master);
-        this.sirenOsc.start();
-        this.sirenLfo.start();
-      } else if (!on && this.sirenOsc) {
-        const osc = this.sirenOsc;
-        const lfo = this.sirenLfo;
-        window.setTimeout(() => { try { osc.stop(); lfo.stop(); } catch { /* done */ } }, 60);
-        this.sirenOsc = null;
-        this.sirenLfo = null;
-      }
+      if (on && !this.sirenOsc) this.startSiren();
+      else if (!on && this.sirenOsc) this.stopSiren();
     } catch { /* ignore */ }
+  }
+
+  // --- the coastal loop ------------------------------------------------------
+
+  // One scheduled bar: the chord's upper voices on even steps, a soft
+  // bass pulse on every step.
+  scheduleBar(chord, when) {
+    if (this.musicStep % 2 === 0) {
+      for (let n = 1; n < chord.length; n++) {
+        this.tone(chord[n], 1.7, 'triangle', 0.028, when);
+      }
+    }
+    this.tone(chord[0], 0.5, 'sine', 0.06, when);
+    this.tone(chord[0] * 2, 0.3, 'sine', 0.03, when + 0.45);
   }
 
   // A slow Am7 — Fmaj7 — Cmaj7 — G progression with a soft bass pulse:
@@ -181,13 +238,7 @@ export class SoundEngine {
         while (this.nextNoteTime < this.ctx.currentTime + 0.35) {
           const chord = chords[Math.floor(this.musicStep / 2) % chords.length];
           const when = this.nextNoteTime - this.ctx.currentTime;
-          if (this.musicStep % 2 === 0) {
-            for (let n = 1; n < chord.length; n++) {
-              this.tone(chord[n], 1.7, 'triangle', 0.028, when);
-            }
-          }
-          this.tone(chord[0], 0.5, 'sine', 0.06, when);
-          this.tone(chord[0] * 2, 0.3, 'sine', 0.03, when + 0.45);
+          this.scheduleBar(chord, when);
           this.nextNoteTime += 0.9;
           this.musicStep++;
         }

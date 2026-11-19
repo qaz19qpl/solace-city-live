@@ -1,7 +1,11 @@
-// main.js — boots Solace City and runs it: the game loop, the camera, the
-// crime-and-witness bookkeeping, busted/wasted respawns, saving, the
-// title/pause flow, and the staged scenes the screenshots are taken from
-// (?scene=chase | downtown | contact | beach).
+// main.js — boots Solace City and runs it.
+//
+// The game loop, the camera, the crime-and-witness bookkeeping, the
+// busted/wasted respawns, saving, the title/pause flow, and the staged
+// scenes the screenshots are taken from (?scene=chase | downtown |
+// contact | beach). Everything else lives in one module per job; this
+// file is the wiring between them. Modes are dispatched through a small
+// table so the frame function stays readable.
 
 import { buildCity } from './city.js';
 import { RNG, clamp, distance } from './random.js';
@@ -14,7 +18,7 @@ import { createCrowd, updateCrowd, scareCrowd } from './people.js';
 import { createPolice } from './police.js';
 import { updateBullets, updatePickups, updateGuards, spawnPickup } from './combat.js';
 import { createPlayer, updatePlayer, nearestCar } from './player.js';
-import { createMissionEngine, CONTACTS, MISSION_DEFS } from './missions.js';
+import { createMissionEngine, MISSION_DEFS } from './missions.js';
 import { loadSave, storeSave, clearSave, defaultSave } from './save.js';
 import { drawWorld } from './render.js';
 import { drawHUD, drawMenus, makeMinimapBase } from './hud.js';
@@ -32,6 +36,7 @@ attachInput(canvas);
 const rng = new RNG(20261118);
 const city = buildCity(20261118);
 
+// The whole game in one object, so the modules can share it by reference.
 const S = {
   mode: 'title',
   time: 0,
@@ -70,6 +75,9 @@ const S = {
   existingSave: loadSave(),
   scene: null,
 };
+
+// The renderer draws this instead of the player when he is on foot, so
+// the camera-facing figure and the simulation stay in step.
 S.playerView = {
   kind: 'player', x: S.player.x, y: S.player.y, angle: 0,
   shirt: '#f2ede2', skin: '#a0663a', pants: '#31404f',
@@ -78,6 +86,7 @@ S.playerView = {
 
 // --- world population -----------------------------------------------------
 
+// Parked cars on the city's parking spots.
 for (const spot of city.parkedSpots) {
   if (rng.chance(0.78)) {
     const car = makeCar(rng.int(0, 5), spot.x, spot.y, spot.angle + rng.range(-0.04, 0.04), rng);
@@ -91,6 +100,8 @@ S.police = createPolice();
 S.missions = createMissionEngine(S);
 S.minimapBase = makeMinimapBase(city);
 
+// Health, armour and ammo where you would expect them: the clinic, the
+// docks, the wrong pockets. They respawn 45 seconds after being taken.
 const PICKUP_HOMES = [
   { x: 2020, y: 545, kind: 'health' },
   { x: 1560, y: 764, kind: 'health' },
@@ -129,6 +140,7 @@ S.addCash = (amount, x, y) => {
   S.persist();
 };
 
+// Heat values per crime. A crime nobody saw still counts, at a quarter.
 const CRIME_HEAT = {
   theft: 60, theftCop: 115, shot: 45, assault: 35, assaultCop: 95,
   crash: 22, runover: 120, copCar: 135, hitCopCar: 85,
@@ -170,6 +182,7 @@ S.onPedAttacked = (ped, cause) => {
   if (cause === 'shot' || cause === 'fist') S.reportCrime('assault', ped.x, ped.y);
 };
 
+// Armour absorbs 65% of a hit; the rest comes off health.
 S.damagePlayer = (amount, cause) => {
   const p = S.player;
   if (S.mode !== 'play' || amount <= 0) return;
@@ -211,6 +224,8 @@ S.onMissionCarStolen = (car) => {
 
 S.tryTalk = () => S.missions.talk();
 
+// Busted: the car is impounded, and you wake up at City Hall.
+// Wasted: the clinic patches you up. Either way the city takes 10%.
 function respawn(kind) {
   const p = S.player;
   const penalty = Math.floor(S.cash * 0.1);
@@ -233,7 +248,9 @@ function respawn(kind) {
   S.camera.x = spot.x;
   S.camera.y = spot.y;
   S.mode = 'play';
-  S.banner(kind === 'busted' ? 'RELEASED' : 'DISCHARGED', penalty > 0 ? `The city took $${penalty} for its trouble` : 'The city lets you go, this once');
+  const title = kind === 'busted' ? 'RELEASED' : 'DISCHARGED';
+  const sub = penalty > 0 ? `The city took $${penalty} for its trouble` : 'The city lets you go, this once';
+  S.banner(title, sub);
   S.persist();
 }
 
@@ -277,7 +294,8 @@ function continueGame() {
   const save = loadSave();
   if (!save) return startNewGame();
   resetRun(save);
-  S.banner('WELCOME BACK', S.storyDone ? 'Solace City is yours' : `Next job: “${MISSION_DEFS[S.nextMission].title}”`);
+  const next = S.storyDone ? 'Solace City is yours' : `Next job: “${MISSION_DEFS[S.nextMission].title}”`;
+  S.banner('WELCOME BACK', next);
 }
 
 function handleButtons() {
@@ -302,10 +320,18 @@ function stageScene(name) {
   resetRun(defaultSave());
   const p = S.player;
   if (name === 'downtown') {
-    p.x = 1150;
-    p.y = 1085;
-    S.camera.x = p.x;
-    S.camera.y = p.y;
+    // On foot on the sidewalk corner by a downtown intersection, so the
+    // shot shows the player, the traffic and the rooftops together.
+    p.x = 1024;
+    p.y = 1024;
+    p.angle = 0;
+    S.camera.x = 1000;
+    S.camera.y = 1000;
+    // A car parked at the kerb beside him, so the shot shows the
+    // get-in prompt and the player is easy to find in the frame.
+    const kerb = makeCar(1, 1000, 1060, Math.PI / 2, rng, '#d95f4b');
+    kerb.driver = 'parked';
+    S.cars.push(kerb);
   } else if (name === 'contact') {
     p.x = 2196;
     p.y = 662;
@@ -315,7 +341,7 @@ function stageScene(name) {
   } else if (name === 'beach') {
     // Southbound in the correct lane, mid-block, with a clear run down the
     // beachfront avenue. The screenshot driver holds W like a player.
-    const car = makeCar(SPORTS_MODEL, 2122, 1000, Math.PI / 2, rng, '#19b3a6');
+    const car = makeCar(SPORTS_MODEL, 2122, 650, Math.PI / 2, rng, '#19b3a6');
     car.driver = 'player';
     car.vy = 120;
     S.cars.push(car);
@@ -329,7 +355,7 @@ function stageScene(name) {
     S.missions.refreshContact();
     S.missions.activate(3);
     const M = S.missions.active;
-    const car = makeCar(SPORTS_MODEL, 1150, 962, 0, rng, '#e33f4e');
+    const car = makeCar(SPORTS_MODEL, 700, 962, 0, rng, '#e33f4e');
     car.driver = 'player';
     car.vx = 265;
     S.cars.push(car);
@@ -344,12 +370,13 @@ function stageScene(name) {
     S.passenger = 'Lena Marsh';
     S.wanted.heat = 340;
     S.cash = 385;
-    const spots = [[905, 962, 0], [812, 962, 0], [985, 1075, -Math.PI / 2]];
+    // Two interceptors closing from behind, one cutting in from the south.
+    const spots = [[450, 962, 0], [380, 962, 0], [950, 1100, -Math.PI / 2]];
     for (const [x, y, a] of spots) {
       const cop = makeCar(POLICE_MODEL, x, y, a, rng);
       cop.driver = 'police';
       cop.vx = Math.cos(a) * 250;
-      cop.vy = Math.sin(a) * 250;
+      cop.vy = Math.sin(a) * (a === -Math.PI / 2 ? 180 : 250);
       S.cars.push(cop);
       S.police.cars.push(cop);
     }
@@ -394,29 +421,7 @@ function computePrompt() {
   S.prompt = null;
 }
 
-function updatePlay(dt) {
-  if (S.dialogue) {
-    if (wasPressed('KeyE') || mouse.clicked) {
-      S.audio.init();
-      S.dialogue.idx += 1;
-      S.audio.click();
-      if (S.dialogue.idx >= S.dialogue.lines.length) {
-        const done = S.dialogue.onDone;
-        S.dialogue = null;
-        if (done) done();
-      }
-    }
-    S.effects.update(dt);
-    return;
-  }
-
-  updatePlayer(dt, S);
-  S.traffic.update(dt, S);
-  S.police.update(dt, S);
-  updateCrowd(dt, S);
-  updateGuards(dt, S);
-
-  const impacts = collideCars(S.cars, S.effects);
+function handleCarImpacts(impacts) {
   for (const hit of impacts) {
     const involvesPlayer = hit.a === S.player.car || hit.b === S.player.car;
     const other = hit.a === S.player.car ? hit.b : hit.a;
@@ -429,11 +434,9 @@ function updatePlay(dt) {
       S.audio.crash(0.35);
     }
   }
+}
 
-  updateBullets(dt, S);
-  updatePickups(dt, S);
-  S.missions.update(dt);
-
+function respawnHomePickups(dt) {
   for (const home of PICKUP_HOMES) {
     const present = S.pickups.some((pk) => Math.abs(pk.x - home.x) < 4 && Math.abs(pk.y - home.y) < 4);
     if (!present) {
@@ -446,9 +449,9 @@ function updatePlay(dt) {
       home.takenT = 0;
     }
   }
+}
 
-  computePrompt();
-
+function trackDistrict() {
   const district = city.districtAt(S.player.x, S.player.y);
   if (district !== S.activeDistrict) {
     S.activeDistrict = district;
@@ -456,11 +459,46 @@ function updatePlay(dt) {
   }
 }
 
+// Dialogue freezes the world; E (or a click) advances it.
+function updateDialogue(dt) {
+  if (wasPressed('KeyE') || mouse.clicked) {
+    S.audio.init();
+    S.dialogue.idx += 1;
+    S.audio.click();
+    if (S.dialogue.idx >= S.dialogue.lines.length) {
+      const done = S.dialogue.onDone;
+      S.dialogue = null;
+      if (done) done();
+    }
+  }
+  S.effects.update(dt);
+}
+
+function updatePlay(dt) {
+  if (S.dialogue) {
+    updateDialogue(dt);
+    return;
+  }
+  updatePlayer(dt, S);
+  S.traffic.update(dt, S);
+  S.police.update(dt, S);
+  updateCrowd(dt, S);
+  updateGuards(dt, S);
+  handleCarImpacts(collideCars(S.cars, S.effects));
+  updateBullets(dt, S);
+  updatePickups(dt, S);
+  S.missions.update(dt);
+  respawnHomePickups(dt);
+  computePrompt();
+  trackDistrict();
+}
+
 function updateCamera(dt) {
   const p = S.player;
   let tx;
   let ty;
   if (S.mode === 'title') {
+    // A slow drift over the marina for the title backdrop.
     tx = 1500 + Math.sin(S.time * 0.05) * 220;
     ty = 820 + Math.cos(S.time * 0.04) * 120;
   } else {
@@ -489,6 +527,7 @@ function render() {
   ctx.save();
   ctx.translate(-view.x + shake.x, -view.y + shake.y);
 
+  // Keep the rendered figure in step with the simulation.
   const pv = S.playerView;
   pv.x = S.player.x;
   pv.y = S.player.y;
@@ -511,6 +550,39 @@ function render() {
   drawMenus(ctx, S);
 }
 
+// One update function per mode; the frame loop just dispatches.
+const MODE_UPDATE = {
+  play(dt) {
+    if (wasPressed('KeyP') || wasPressed('Escape')) {
+      S.mode = 'pause';
+      S.audio.setEngine(null);
+    } else {
+      updatePlay(dt);
+    }
+    S.effects.update(dt);
+  },
+  title(dt) {
+    S.traffic.update(dt, S);
+    updateCrowd(dt, S);
+    S.effects.update(dt);
+    if (wasPressed('Enter')) {
+      if (S.existingSave) continueGame();
+      else startNewGame();
+    }
+  },
+  pause() {
+    if (wasPressed('KeyP') || wasPressed('Escape')) S.mode = 'play';
+  },
+  busted(dt) {
+    if (wasPressed('Enter')) respawn('busted');
+    S.effects.update(dt);
+  },
+  wasted(dt) {
+    if (wasPressed('Enter')) respawn('wasted');
+    S.effects.update(dt);
+  },
+};
+
 let lastTs = 0;
 function frame(ts) {
   const dt = Math.min(0.033, lastTs ? (ts - lastTs) / 1000 : 0.016);
@@ -521,31 +593,10 @@ function frame(ts) {
 
   if (mouse.clicked || wasPressed('KeyW')) S.audio.init();
 
-  if (S.mode === 'play') {
-    if (wasPressed('KeyP') || wasPressed('Escape')) {
-      S.mode = 'pause';
-      S.audio.setEngine(null);
-    } else {
-      updatePlay(dt);
-    }
-  } else if (S.mode === 'title') {
-    S.traffic.update(dt, S);
-    updateCrowd(dt, S);
-    S.effects.update(dt);
-  } else if (S.mode === 'pause') {
-    if (wasPressed('KeyP') || wasPressed('Escape')) S.mode = 'play';
-  } else if (S.mode === 'busted' || S.mode === 'wasted') {
-    if (wasPressed('Enter')) respawn(S.mode);
-    S.effects.update(dt);
-  }
+  const update = MODE_UPDATE[S.mode];
+  if (update) update(dt);
 
-  if (S.mode === 'play') S.effects.update(dt);
   if (wasPressed('KeyM')) S.audio.setMuted(!S.audio.muted);
-  if (S.mode === 'title' && wasPressed('Enter')) {
-    if (S.existingSave) continueGame();
-    else startNewGame();
-  }
-
   handleButtons();
   updateCamera(dt);
   render();
@@ -553,6 +604,7 @@ function frame(ts) {
   window.requestAnimationFrame(frame);
 }
 
+// Handles for the screenshot driver and for debugging in the console.
 window.__game = S;
 window.__gameActions = { startNewGame, continueGame, respawn };
 window.requestAnimationFrame(frame);

@@ -1,6 +1,10 @@
-// player.js — Dario Venn himself: walking, running, aiming, stealing cars
-// and driving them. On foot he is a twin-stick fighter (WASD moves, the
-// mouse aims); in a car the same keys become pedals and steering.
+// player.js — Dario Venn himself: walking, running, aiming, stealing
+// cars and driving them.
+//
+// On foot he is a twin-stick fighter (WASD moves, the mouse aims, click
+// shoots or punches); in a car the same keys become pedals and steering.
+// Getting into a traffic car drags its driver out — and the whole city
+// notices. E is the universal hand: talk to a contact, get in, get out.
 
 import { stepCar, carSpeed, speedOf } from './cars.js';
 import { hurtPed, makePed } from './people.js';
@@ -29,6 +33,8 @@ export function createPlayer(x, y) {
   };
 }
 
+// The nearest car to a point, within maxDist, favouring close ones by
+// measuring to the car's edge rather than its centre.
 export function nearestCar(S, x, y, maxDist) {
   let best = null;
   let bestD = maxDist;
@@ -42,35 +48,35 @@ export function nearestCar(S, x, y, maxDist) {
   return best;
 }
 
-export function tryEnterExitCar(S) {
-  const p = S.player;
-  if (p.car) {
-    const car = p.car;
-    car.driver = 'parked';
-    // Step out on whichever side is not a wall.
-    const rx = -Math.sin(car.angle);
-    const ry = Math.cos(car.angle);
-    for (const side of [1, -1]) {
-      const pos = { x: car.x + rx * side * (car.wid + 12), y: car.y + ry * side * (car.wid + 12) };
-      const before = { ...pos };
-      S.city.collideCircle(pos, 9);
-      if (Math.abs(pos.x - before.x) < 0.01 && Math.abs(pos.y - before.y) < 0.01) {
-        p.x = pos.x;
-        p.y = pos.y;
-        break;
-      }
-      p.x = pos.x;
-      p.y = pos.y;
-    }
-    p.car = null;
-    S.audio.setEngine(null);
-    S.audio.click();
-    return;
+// Step out on whichever side is not a wall (driver side first).
+function stepOutOfCar(S, car) {
+  const rx = -Math.sin(car.angle);
+  const ry = Math.cos(car.angle);
+  let spot = { x: car.x + rx * (car.wid + 12), y: car.y + ry * (car.wid + 12) };
+  for (const side of [1, -1]) {
+    const pos = { x: car.x + rx * side * (car.wid + 12), y: car.y + ry * side * (car.wid + 12) };
+    const before = { ...pos };
+    S.city.collideCircle(pos, 9);
+    spot = pos;
+    if (Math.abs(pos.x - before.x) < 0.01 && Math.abs(pos.y - before.y) < 0.01) break;
   }
+  return spot;
+}
 
-  const car = nearestCar(S, p.x, p.y, 54);
-  if (!car || car.wrecked) return;
+function exitCar(S) {
+  const p = S.player;
+  const car = p.car;
+  car.driver = 'parked';
+  const spot = stepOutOfCar(S, car);
+  p.x = spot.x;
+  p.y = spot.y;
+  p.car = null;
+  S.audio.setEngine(null);
+  S.audio.click();
+}
 
+function enterCar(S, car) {
+  const p = S.player;
   if (car.driver === 'traffic') {
     // Drag the driver out. They will have opinions about this.
     const driver = makePed(S.rng, car.x + 14, car.y + 16);
@@ -95,28 +101,42 @@ export function tryEnterExitCar(S) {
   S.audio.click();
 }
 
-function checkRunOvers(S, car) {
-  const sp = speedOf(car);
-  if (sp < 65) return;
+// E on foot: get in the nearest car (or drag its driver out first).
+// E in a car: step out on whichever side is not a wall.
+export function tryEnterExitCar(S) {
+  const p = S.player;
+  if (p.car) {
+    exitCar(S);
+    return;
+  }
+  const car = nearestCar(S, p.x, p.y, 54);
+  if (!car || car.wrecked) return;
+  enterCar(S, car);
+}
+
+// At speed, the front, middle and rear of the car all run people over.
+function runOverAt(S, car, person, radius, onHit) {
   const fx = Math.cos(car.angle);
   const fy = Math.sin(car.angle);
-  const checkBody = (person, radius, onHit) => {
-    for (const s of [0.32, -0.32, 0]) {
-      const cx = car.x + fx * car.len * s;
-      const cy = car.y + fy * car.len * s;
-      if (distance(cx, cy, person.x, person.y) < car.wid * 0.55 + radius) {
-        onHit();
-        return;
-      }
+  for (const s of [0.32, -0.32, 0]) {
+    const cx = car.x + fx * car.len * s;
+    const cy = car.y + fy * car.len * s;
+    if (distance(cx, cy, person.x, person.y) < car.wid * 0.55 + radius) {
+      onHit();
+      return;
     }
-  };
+  }
+}
+
+function checkRunOvers(S, car) {
+  if (speedOf(car) < 65) return;
   for (const ped of S.peds) {
     if (ped.state === 'down' || ped.state === 'dead') continue;
-    checkBody(ped, 8, () => hurtPed(S, ped, 34, 'car'));
+    runOverAt(S, car, ped, 8, () => hurtPed(S, ped, 34, 'car'));
   }
   for (const cop of S.cops) {
     if (cop.state !== 'chase') continue;
-    checkBody(cop, 8, () => {
+    runOverAt(S, car, cop, 8, () => {
       cop.hp -= 55;
       S.reportCrime('copCar', car.x, car.y);
       if (cop.hp <= 0) {
@@ -128,6 +148,54 @@ function checkRunOvers(S, car) {
   }
 }
 
+function updateDriving(dt, S) {
+  const p = S.player;
+  const car = p.car;
+  const throttle = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) + (keys.has('KeyS') || keys.has('ArrowDown') ? -1 : 0);
+  const steer = (keys.has('KeyA') || keys.has('ArrowLeft') ? -1 : 0) + (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0);
+  const impact = stepCar(car, { throttle, steer, handbrake: keys.has('Space') }, dt, S.city, S.effects);
+  p.x = car.x;
+  p.y = car.y;
+  p.angle = car.angle;
+  if (impact > 95) {
+    S.audio.crash(Math.min(1, impact / 220));
+    S.damagePlayer((impact - 80) * 0.06, 'crash');
+    if (impact > 150) S.reportCrime('crash', p.x, p.y);
+  }
+  checkRunOvers(S, car);
+  S.audio.setEngine(clamp(Math.abs(carSpeed(car)) / 440, 0, 1));
+  if (wasPressed('KeyE')) tryEnterExitCar(S);
+}
+
+function updateOnFoot(dt, S) {
+  const p = S.player;
+  const axis = moveAxis();
+  const sprint = keys.has('ShiftLeft') || keys.has('ShiftRight');
+  const speed = sprint ? 240 : 168;
+  p.x += axis.x * speed * dt;
+  p.y += axis.y * speed * dt;
+  const pos = { x: p.x, y: p.y };
+  S.city.collideCircle(pos, 9);
+  p.x = pos.x;
+  p.y = pos.y;
+  p.speedMag = Math.sqrt(axis.x * axis.x + axis.y * axis.y) * (axis.x || axis.y ? speed : 0);
+  if (axis.x || axis.y) p.walkFrame += dt * (sprint ? 11 : 8);
+
+  // Aim from the mouse's world position, computed by main into S.mouseWorld.
+  p.aimAngle = angleTo(p.x, p.y, S.mouseWorld.x, S.mouseWorld.y);
+  p.angle = p.aimAngle;
+
+  if (mouse.down) {
+    if (p.hasPistol && p.ammo > 0) playerShoot(S);
+    else if (p.punchCd <= 0) playerPunch(S);
+  }
+  if (wasPressed('KeyF')) playerPunch(S);
+  if (wasPressed('KeyE')) {
+    if (!S.tryTalk()) tryEnterExitCar(S);
+  }
+  S.audio.setEngine(null);
+}
+
 export function updatePlayer(dt, S) {
   const p = S.player;
   const prevX = p.x;
@@ -136,50 +204,8 @@ export function updatePlayer(dt, S) {
   p.punchCd = Math.max(0, p.punchCd - dt);
   p.hurtT = Math.max(0, p.hurtT - dt);
 
-  if (p.car) {
-    const car = p.car;
-    const throttle = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) + (keys.has('KeyS') || keys.has('ArrowDown') ? -1 : 0);
-    const steer = (keys.has('KeyA') || keys.has('ArrowLeft') ? -1 : 0) + (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0);
-    const handbrake = keys.has('Space');
-    const impact = stepCar(car, { throttle, steer, handbrake }, dt, S.city, S.effects);
-    p.x = car.x;
-    p.y = car.y;
-    p.angle = car.angle;
-    if (impact > 95) {
-      S.audio.crash(Math.min(1, impact / 220));
-      S.damagePlayer((impact - 80) * 0.06, 'crash');
-      if (impact > 150) S.reportCrime('crash', p.x, p.y);
-    }
-    checkRunOvers(S, car);
-    S.audio.setEngine(clamp(Math.abs(carSpeed(car)) / 440, 0, 1));
-    if (wasPressed('KeyE')) tryEnterExitCar(S);
-  } else {
-    const axis = moveAxis();
-    const sprint = keys.has('ShiftLeft') || keys.has('ShiftRight');
-    const speed = sprint ? 240 : 168;
-    p.x += axis.x * speed * dt;
-    p.y += axis.y * speed * dt;
-    const pos = { x: p.x, y: p.y };
-    S.city.collideCircle(pos, 9);
-    p.x = pos.x;
-    p.y = pos.y;
-    p.speedMag = Math.sqrt(axis.x * axis.x + axis.y * axis.y) * (axis.x || axis.y ? speed : 0);
-    if (axis.x || axis.y) p.walkFrame += dt * (sprint ? 11 : 8);
-
-    // Aim from the mouse's world position, computed by main into S.mouseWorld.
-    p.aimAngle = angleTo(p.x, p.y, S.mouseWorld.x, S.mouseWorld.y);
-    p.angle = p.aimAngle;
-
-    if (mouse.down) {
-      if (p.hasPistol && p.ammo > 0) playerShoot(S);
-      else if (p.punchCd <= 0) playerPunch(S);
-    }
-    if (wasPressed('KeyF')) playerPunch(S);
-    if (wasPressed('KeyE')) {
-      if (!S.tryTalk()) tryEnterExitCar(S);
-    }
-    S.audio.setEngine(null);
-  }
+  if (p.car) updateDriving(dt, S);
+  else updateOnFoot(dt, S);
 
   p.vx = dt > 0 ? (p.x - prevX) / dt : 0;
   p.vy = dt > 0 ? (p.y - prevY) / dt : 0;

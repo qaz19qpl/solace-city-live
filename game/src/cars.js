@@ -1,7 +1,15 @@
-// cars.js — Solace City's six street cars plus the police interceptor:
-// their shapes, paint, top speeds and the arcade physics every driver
-// (player, traffic, police) shares. Cars collide as two circles, front
-// and rear axle, which keeps them honest against building corners.
+// cars.js — Solace City's street cars, plus the police interceptor.
+//
+// Six civilian models and one SCPD Interceptor: their shapes, paint,
+// top speeds and the arcade physics every driver shares — the player,
+// traffic and the police all steer through `stepCar`. Cars collide as
+// two circles, one per axle, which keeps them honest against building
+// corners and each other.
+//
+// The physics step runs in phases on a small state bundle: engine and
+// drag, grip, steering, integration, tyre marks, then the two axle
+// circles against the world. Nothing here is random; the same inputs
+// always give the same car.
 
 import { clamp } from './random.js';
 
@@ -40,14 +48,97 @@ export function makeCar(modelIdx, x, y, angle, rng, colorOverride = null) {
   };
 }
 
+// Forward speed along the car's nose (negative when reversing).
 export function carSpeed(car) {
-  const fx = Math.cos(car.angle);
-  const fy = Math.sin(car.angle);
-  return car.vx * fx + car.vy * fy;
+  return car.vx * Math.cos(car.angle) + car.vy * Math.sin(car.angle);
 }
 
+// Speed over the ground, whatever the direction.
 export function speedOf(car) {
   return Math.sqrt(car.vx * car.vx + car.vy * car.vy);
+}
+
+// --- stepCar phases --------------------------------------------------------
+
+// Engine and drag on the forward speed.
+function applyEngine(st) {
+  const { model, control, dt } = st;
+  const throttle = clamp(control.throttle, -1, 1);
+  if (throttle > 0) {
+    st.vf += model.accel * throttle * dt;
+  } else if (throttle < 0) {
+    // Brake first, then reverse.
+    if (st.vf > 12) st.vf -= 420 * dt;
+    else st.vf += model.accel * 0.55 * throttle * dt;
+  }
+  const dragK = control.handbrake ? 0.25 : 0.55;
+  st.vf -= st.vf * dragK * dt;
+  if (!control.handbrake && throttle === 0) st.vf -= st.vf * 0.8 * dt;
+  st.vf = clamp(st.vf, -model.topSpeed * 0.38, model.topSpeed);
+}
+
+// Grip kills sideways slide; the handbrake lets the tail hang out.
+function applyGrip(st) {
+  const grip = st.control.handbrake ? 1.7 : st.model.grip;
+  st.vr *= Math.exp(-grip * st.dt);
+}
+
+// Steering bites harder the faster you go, up to a point.
+function applySteering(st) {
+  const steerAuthority = clamp(st.vf / 130, -1, 1);
+  const steerBoost = st.control.handbrake ? 1.3 : 1;
+  st.car.angle += clamp(st.control.steer, -1, 1) * 2.55 * steerAuthority * steerBoost * st.dt;
+}
+
+// Tyre smoke and skid marks while sliding.
+function leaveTyreMarks(st) {
+  const { car, effects, dt } = st;
+  const sliding = Math.abs(st.vr) > 52 || (st.control.handbrake && Math.abs(st.vf) > 85);
+  const rearX = car.x - st.fx * car.len * 0.32;
+  const rearY = car.y - st.fy * car.len * 0.32;
+  const wheelL = { x: rearX + st.rx * car.wid * 0.42, y: rearY + st.ry * car.wid * 0.42 };
+  const wheelR = { x: rearX - st.rx * car.wid * 0.42, y: rearY - st.ry * car.wid * 0.42 };
+  if (sliding && effects) {
+    if (car.skidL) {
+      effects.addSkid(car.skidL.x, car.skidL.y, wheelL.x, wheelL.y);
+      effects.addSkid(car.skidR.x, car.skidR.y, wheelR.x, wheelR.y);
+    }
+    car.smokeCd -= dt;
+    if (car.smokeCd <= 0) {
+      effects.smoke(rearX, rearY);
+      car.smokeCd = 0.05;
+    }
+  }
+  car.skidL = wheelL;
+  car.skidR = wheelR;
+}
+
+// Building and world collision on the two axle circles. Returns the
+// hardest impact speed, and pushes the car back out of the wall.
+function collideAxles(st) {
+  const { car, city } = st;
+  let impact = 0;
+  const axleR = car.wid * 0.54;
+  for (const s of [0.32, -0.32]) {
+    const probe = { x: car.x + st.fx * car.len * s, y: car.y + st.fy * car.len * s };
+    const beforeX = probe.x;
+    const beforeY = probe.y;
+    if (!city.collideCircle(probe, axleR)) continue;
+    const pushX = probe.x - beforeX;
+    const pushY = probe.y - beforeY;
+    car.x += pushX;
+    car.y += pushY;
+    const into = -(car.vx * pushX + car.vy * pushY);
+    if (into <= 0) continue;
+    const pushLen = Math.sqrt(pushX * pushX + pushY * pushY) || 1;
+    const nx = pushX / pushLen;
+    const ny = pushY / pushLen;
+    const vn = car.vx * nx + car.vy * ny;
+    car.vx -= nx * vn * 1.25;
+    car.vy -= ny * vn * 1.25;
+    impact = Math.max(impact, Math.abs(vn));
+  }
+  return impact;
 }
 
 // One physics step. control = { throttle: -1..1, steer: -1..1, handbrake }.
@@ -61,91 +152,35 @@ export function stepCar(car, control, dt, city, effects) {
     return 0;
   }
   const model = CAR_MODELS[car.model];
-  let fx = Math.cos(car.angle);
-  let fy = Math.sin(car.angle);
-  let rx = -fy;
-  let ry = fx;
+  const st = {
+    car, model, control, dt, city, effects,
+    fx: Math.cos(car.angle), fy: Math.sin(car.angle),
+    rx: 0, ry: 0,
+    vf: 0, vr: 0,
+  };
+  st.rx = -st.fy;
+  st.ry = st.fx;
+  st.vf = car.vx * st.fx + car.vy * st.fy;
+  st.vr = car.vx * st.rx + car.vy * st.ry;
 
-  let vf = car.vx * fx + car.vy * fy;
-  let vr = car.vx * rx + car.vy * ry;
+  applyEngine(st);
+  applyGrip(st);
+  applySteering(st);
 
-  // Engine and drag.
-  const throttle = clamp(control.throttle, -1, 1);
-  if (throttle > 0) vf += model.accel * throttle * dt;
-  else if (throttle < 0) {
-    // Brake first, then reverse.
-    if (vf > 12) vf -= 420 * dt;
-    else vf += model.accel * 0.55 * throttle * dt;
-  }
-  const dragK = control.handbrake ? 0.25 : 0.55;
-  vf -= vf * dragK * dt;
-  if (!control.handbrake && throttle === 0) vf -= vf * 0.8 * dt;
-  const top = model.topSpeed;
-  vf = clamp(vf, -top * 0.38, top);
-
-  // Grip kills sideways slide; the handbrake lets the tail hang out.
-  const grip = control.handbrake ? 1.7 : model.grip;
-  vr *= Math.exp(-grip * dt);
-
-  // Steering bites harder the faster you go, up to a point.
-  const steerAuthority = clamp(vf / 130, -1, 1);
-  car.angle += clamp(control.steer, -1, 1) * 2.55 * steerAuthority * (control.handbrake ? 1.3 : 1) * dt;
-
-  fx = Math.cos(car.angle);
-  fy = Math.sin(car.angle);
-  rx = -fy;
-  ry = fx;
-  car.vx = fx * vf + rx * vr;
-  car.vy = fy * vf + ry * vr;
+  st.fx = Math.cos(car.angle);
+  st.fy = Math.sin(car.angle);
+  st.rx = -st.fy;
+  st.ry = st.fx;
+  car.vx = st.fx * st.vf + st.rx * st.vr;
+  car.vy = st.fy * st.vf + st.ry * st.vr;
   car.x += car.vx * dt;
   car.y += car.vy * dt;
 
-  // Tyre smoke and skid marks while sliding.
-  const sliding = Math.abs(vr) > 52 || (control.handbrake && Math.abs(vf) > 85);
-  const rearX = car.x - fx * car.len * 0.32;
-  const rearY = car.y - fy * car.len * 0.32;
-  const wl = { x: rearX + rx * car.wid * 0.42, y: rearY + ry * car.wid * 0.42 };
-  const wr = { x: rearX - rx * car.wid * 0.42, y: rearY - ry * car.wid * 0.42 };
-  if (sliding && effects) {
-    if (car.skidL) {
-      effects.addSkid(car.skidL.x, car.skidL.y, wl.x, wl.y);
-      effects.addSkid(car.skidR.x, car.skidR.y, wr.x, wr.y);
-    }
-    car.smokeCd -= dt;
-    if (car.smokeCd <= 0) {
-      effects.smoke(rearX, rearY);
-      car.smokeCd = 0.05;
-    }
-  }
-  car.skidL = wl;
-  car.skidR = wr;
-
-  // Building and world collision on the two axle circles.
-  let impact = 0;
-  const r = car.wid * 0.54;
-  for (const s of [0.32, -0.32]) {
-    const p = { x: car.x + fx * car.len * s, y: car.y + fy * car.len * s };
-    const before = { ...p };
-    if (city.collideCircle(p, r)) {
-      const pushX = p.x - before.x;
-      const pushY = p.y - before.y;
-      car.x += pushX;
-      car.y += pushY;
-      const into = -(car.vx * pushX + car.vy * pushY);
-      if (into > 0) {
-        const pushLen = Math.sqrt(pushX * pushX + pushY * pushY) || 1;
-        const nx = pushX / pushLen;
-        const ny = pushY / pushLen;
-        const vn = car.vx * nx + car.vy * ny;
-        car.vx -= nx * vn * 1.25;
-        car.vy -= ny * vn * 1.25;
-        impact = Math.max(impact, Math.abs(vn));
-      }
-    }
-  }
+  leaveTyreMarks(st);
+  const impact = collideAxles(st);
 
   if (impact > 40 && effects) {
-    effects.sparks(car.x + fx * car.len * 0.4, car.y + fy * car.len * 0.4, car.angle);
+    effects.sparks(car.x + st.fx * car.len * 0.4, car.y + st.fy * car.len * 0.4, car.angle);
     effects.dust(car.x, car.y);
   }
   if (impact > 70) {
@@ -162,50 +197,53 @@ export function stepCar(car, control, dt, city, effects) {
   return impact;
 }
 
-// Circle-versus-circle car collisions, resolved pairwise by the caller on
-// the full car list. Returns a list of impacts {a, b, force} for effects.
+// One pair of cars, resolved as circles. Returns the impact record when
+// the hit was hard enough to matter, else null.
+function resolveCarPair(a, b, effects) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const minD = (a.len + b.len) * 0.36;
+  const d2 = dx * dx + dy * dy;
+  if (d2 >= minD * minD || d2 === 0) return null;
+  const d = Math.sqrt(d2);
+  const nx = dx / d;
+  const ny = dy / d;
+  const overlap = (minD - d) / 2;
+  // A parked car barely gives way; a moving one gives way fully.
+  const aGive = a.driver === 'parked' && !a.wrecked ? 0.25 : 1;
+  const bGive = b.driver === 'parked' && !b.wrecked ? 0.25 : 1;
+  a.x -= nx * overlap * aGive;
+  a.y -= ny * overlap * aGive;
+  b.x += nx * overlap * bGive;
+  b.y += ny * overlap * bGive;
+  const rvx = b.vx - a.vx;
+  const rvy = b.vy - a.vy;
+  const vn = rvx * nx + rvy * ny;
+  if (vn >= 0) return null;
+  const impulse = -vn * 0.72;
+  a.vx -= nx * impulse * aGive;
+  a.vy -= ny * impulse * aGive;
+  b.vx += nx * impulse * bGive;
+  b.vy += ny * impulse * bGive;
+  const force = Math.abs(vn);
+  if (force <= 55) return null;
+  a.hp -= (force - 45) * 0.1;
+  b.hp -= (force - 45) * 0.1;
+  if (a.hp <= 0) { a.hp = 0; a.wrecked = true; }
+  if (b.hp <= 0) { b.hp = 0; b.wrecked = true; }
+  const record = { a, b, force, x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  if (effects) effects.sparks(record.x, record.y, Math.atan2(ny, nx));
+  return record;
+}
+
+// Circle-versus-circle car collisions, resolved pairwise over the full
+// car list. Returns a list of impacts {a, b, force} for effects and sound.
 export function collideCars(cars, effects) {
   const impacts = [];
   for (let i = 0; i < cars.length; i++) {
-    const a = cars[i];
     for (let j = i + 1; j < cars.length; j++) {
-      const b = cars[j];
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const minD = (a.len + b.len) * 0.36;
-      const d2 = dx * dx + dy * dy;
-      if (d2 >= minD * minD || d2 === 0) continue;
-      const d = Math.sqrt(d2);
-      const nx = dx / d;
-      const ny = dy / d;
-      const overlap = (minD - d) / 2;
-      const aStatic = a.driver === 'parked' && !a.wrecked ? 0.25 : 1;
-      const bStatic = b.driver === 'parked' && !b.wrecked ? 0.25 : 1;
-      a.x -= nx * overlap * aStatic;
-      a.y -= ny * overlap * aStatic;
-      b.x += nx * overlap * bStatic;
-      b.y += ny * overlap * bStatic;
-      const rvx = b.vx - a.vx;
-      const rvy = b.vy - a.vy;
-      const vn = rvx * nx + rvy * ny;
-      if (vn < 0) {
-        const impulse = -vn * 0.72;
-        a.vx -= nx * impulse * aStatic;
-        a.vy -= ny * impulse * aStatic;
-        b.vx += nx * impulse * bStatic;
-        b.vy += ny * impulse * bStatic;
-        const force = Math.abs(vn);
-        if (force > 55) {
-          a.hp -= (force - 45) * 0.1;
-          b.hp -= (force - 45) * 0.1;
-          if (a.hp <= 0) { a.hp = 0; a.wrecked = true; }
-          if (b.hp <= 0) { b.hp = 0; b.wrecked = true; }
-          impacts.push({ a, b, force, x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
-          if (effects) {
-            effects.sparks((a.x + b.x) / 2, (a.y + b.y) / 2, Math.atan2(ny, nx));
-          }
-        }
-      }
+      const hit = resolveCarPair(cars[i], cars[j], effects);
+      if (hit) impacts.push(hit);
     }
   }
   return impacts;

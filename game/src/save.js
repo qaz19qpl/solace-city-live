@@ -1,6 +1,13 @@
-// save.js — the localStorage save game. One slot holds Dario's cash, story
-// progress, health kit and lifetime tallies, so Continue on the title
-// screen picks the story up where it stopped.
+// save.js — the one-slot localStorage save.
+//
+// Dario's cash, story progress, pistol and lifetime tallies live in a
+// single key, so the title screen's Continue picks the story up where it
+// stopped. Everything here is defensive: a corrupt or missing slot just
+// means a fresh start, never a crash.
+//
+// The shape is fixed by `defaultSave`; loading merges whatever survived
+// onto a fresh shape, so an old or partial save can never leave a hole
+// where the game expects a number.
 
 const SAVE_KEY = 'solace-city-save-v1';
 
@@ -15,19 +22,24 @@ export function defaultSave() {
   };
 }
 
+// Layer stored data over a fresh save so missing fields fall back.
+function mergeSave(data) {
+  const fresh = defaultSave();
+  if (typeof data !== 'object' || data === null) return null;
+  return {
+    ...fresh,
+    ...data,
+    stats: { ...fresh.stats, ...(data.stats || {}) },
+  };
+}
+
 export function loadSave() {
   try {
     const raw = window.localStorage.getItem(SAVE_KEY);
     if (!raw) return null;
-    const data = JSON.parse(raw);
-    if (typeof data !== 'object' || data === null) return null;
-    const fresh = defaultSave();
-    return {
-      ...fresh,
-      ...data,
-      stats: { ...fresh.stats, ...(data.stats || {}) },
-    };
+    return mergeSave(JSON.parse(raw));
   } catch {
+    // Corrupt JSON or a browser that blocks storage: no save, no problem.
     return null;
   }
 }

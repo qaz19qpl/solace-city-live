@@ -1,9 +1,17 @@
 // missions.js — Dario Venn's story: five jobs for three people who all
-// claim they are doing him a favour. Lena Marsh runs the marina, Big Sal
-// Okafor lends money at rates that should be illegal, and Priya Anand can
-// make any car disappear — for a price, she will also make one appear in
-// your hands. The engine runs one mission at a time: talk to the glowing
-// contact, hear them out, follow the marker, get paid.
+// claim they are doing him a favour.
+//
+// Lena Marsh runs the marina, Big Sal Okafor lends money at rates that
+// should be illegal, and Priya Anand can make any car disappear — for a
+// price, she will also make one appear in your hands. The engine runs one
+// mission at a time: walk up to the glowing contact, hear them out,
+// follow the gold marker, get paid. Failing a job (busted, wasted, out of
+// time) costs the job, never the story.
+//
+// Each job is a builder that fills in a mission record M: its objective
+// and target for the HUD, an update(dt) that runs every frame, an
+// onCarStolen hook for the jobs that care, and a cleanup() that takes its
+// actors off the street when the job ends for any reason.
 
 import { makePed } from './people.js';
 import { makeCar, SPORTS_MODEL } from './cars.js';
@@ -22,9 +30,9 @@ export const MISSION_DEFS = [
     contact: 'lena',
     reward: 250,
     intro: [
-      ['Lena Marsh', 'Dario Venn. Still breathing, I see. I have a package at the Old Port yard that needs to be downtown before anyone asks what is in it.'],
-      ['Dario Venn', 'What is in it?'],
-      ['Lena Marsh', 'Fish, officially. Drive it like it is fish. Bring it to the doorway on the west side of the block, south of Coral Park.'],
+      ['Lena Marsh', 'Dario Venn. Still breathing, I see. A package is waiting at the Old Port yard, and it needs to be downtown before anyone starts asking what is inside it.'],
+      ['Dario Venn', 'What is inside it?'],
+      ['Lena Marsh', 'Fish, officially. Drive it like it is fish. The doorway on the west side of the block, south of Coral Park.'],
     ],
   },
   {
@@ -34,7 +42,7 @@ export const MISSION_DEFS = [
     intro: [
       ['Big Sal Okafor', 'Rudy Pells borrowed four hundred from me to fix his boat. The boat is fine. Rudy is the problem.'],
       ['Dario Venn', 'You want me to break his legs?'],
-      ['Big Sal Okafor', 'I want my four hundred. He is by the Coral Park gates, limbering up. Catch him, remind him, come back with my money. Try not to enjoy it.'],
+      ['Big Sal Okafor', 'I want my four hundred. He is by the Coral Park gates, limbering up. Catch him, remind him, and come back with my money. Try not to enjoy it.'],
     ],
   },
   {
@@ -42,9 +50,9 @@ export const MISSION_DEFS = [
     contact: 'priya',
     reward: 650,
     intro: [
-      ['Priya Anand', 'There is a red Vantara Sunfire parked in Coral Heights whose owner has stopped paying for it. The bank wants it. I want it first.'],
+      ['Priya Anand', 'A red Vantara Sunfire sits parked in Coral Heights, and its owner has stopped paying for it. The bank wants it back. I want it first.'],
       ['Dario Venn', 'And if the alarm has opinions?'],
-      ['Priya Anand', 'Then drive like the alarm is right. Bring it to my garage door, paint intact. Ninety seconds of fame, Dario. Try two minutes, maximum.'],
+      ['Priya Anand', 'Then drive like the alarm is right. Bring it to my garage door, paint intact. Ninety seconds of fame, Dario. Two minutes, maximum.'],
     ],
   },
   {
@@ -52,7 +60,7 @@ export const MISSION_DEFS = [
     contact: 'lena',
     reward: 800,
     intro: [
-      ['Lena Marsh', 'Tonight I stop being a courier, Dario. There is a vault at the Sol&Co Bank downtown and my name is finally on the right side of it.'],
+      ['Lena Marsh', 'Tonight I stop being a courier, Dario. There is a vault at the Sol&Co Bank downtown, and my name is finally on the right side of it.'],
       ['Dario Venn', 'You are robbing your own bank.'],
       ['Lena Marsh', 'I am withdrawing my future. Bring a car to the bank steps. When I come out, we drive to the Old Port hideout and we do not stop for anyone wearing blue.'],
     ],
@@ -69,24 +77,31 @@ export const MISSION_DEFS = [
   },
 ];
 
-// --- the five jobs, each a small state machine ---------------------------
+// --- the five jobs ---------------------------------------------------------
 
 function missionFirstRun(S, M) {
-  S.missionItem = { x: 470, y: 370, kind: 'package' };
+  const PACKAGE = { x: 470, y: 370 };
+  const DOORWAY = { x: 1013, y: 1150 };
+  S.missionItem = { x: PACKAGE.x, y: PACKAGE.y, kind: 'package' };
   M.objective = 'Pick up the package at the Old Port yard';
-  M.target = { x: 470, y: 370 };
-  M.update = (dt) => {
-    if (M.stage === 0) {
-      if (distance(S.player.x, S.player.y, 470, 370) < 28) {
-        S.missionItem = null;
-        M.stage = 1;
-        M.timer = 240;
-        M.objective = 'Deliver the package downtown — west doorway, south of Coral Park';
-        M.target = { x: 1013, y: 1150 };
-        S.banner('PACKAGE ON BOARD', 'Downtown, and do not open it');
+  M.target = { ...PACKAGE };
+  M.update = () => {
+    switch (M.stage) {
+      case 0: {
+        if (distance(S.player.x, S.player.y, PACKAGE.x, PACKAGE.y) < 28) {
+          S.missionItem = null;
+          M.stage = 1;
+          M.timer = 240;
+          M.objective = 'Deliver the package downtown — west doorway, south of Coral Park';
+          M.target = { ...DOORWAY };
+          S.banner('PACKAGE ON BOARD', 'Downtown, and do not open it');
+        }
+        break;
       }
-    } else if (distance(S.player.x, S.player.y, 1013, 1150) < 36) {
-      M.finish();
+      case 1: {
+        if (distance(S.player.x, S.player.y, DOORWAY.x, DOORWAY.y) < 36) M.finish();
+        break;
+      }
     }
   };
   M.cleanup = () => { S.missionItem = null; };
@@ -141,6 +156,7 @@ function missionDebtor(S, M) {
 }
 
 function missionHotMetal(S, M) {
+  const GARAGE = { x: 1350, y: 830 };
   const car = makeCar(SPORTS_MODEL, 1150, 609, 0, S.rng, '#e33f4e');
   car.owner = 'mission-target';
   car.driver = 'parked';
@@ -154,25 +170,24 @@ function missionHotMetal(S, M) {
       M.fail('The Sunfire is a write-off. Priya will not pay for scrap.');
       return;
     }
-    if (M.stage === 1) {
-      M.target = { x: 1350, y: 830 };
-      if (S.player.car === car && distance(car.x, car.y, 1350, 830) < 62) {
-        if (car.hp < 25) {
-          M.fail('Too smashed up — Priya wanted a car, not a sculpture.');
-          return;
-        }
-        // Priya takes the keys; Dario walks away richer.
-        S.player.car = null;
-        car.driver = 'parked';
-        car.owner = null;
-        car.x = 1330;
-        car.y = 838;
-        car.vx = 0;
-        car.vy = 0;
-        S.player.x = 1300;
-        S.player.y = 872;
-        M.finish();
+    if (M.stage !== 1) return;
+    M.target = { ...GARAGE };
+    if (S.player.car === car && distance(car.x, car.y, GARAGE.x, GARAGE.y) < 62) {
+      if (car.hp < 25) {
+        M.fail('Too smashed up — Priya wanted a car, not a sculpture.');
+        return;
       }
+      // Priya takes the keys; Dario walks away richer.
+      S.player.car = null;
+      car.driver = 'parked';
+      car.owner = null;
+      car.x = 1330;
+      car.y = 838;
+      car.vx = 0;
+      car.vy = 0;
+      S.player.x = 1300;
+      S.player.y = 872;
+      M.finish();
     }
   };
   M.onCarStolen = (stolen) => {
@@ -188,51 +203,60 @@ function missionHotMetal(S, M) {
 }
 
 function missionGetaway(S, M) {
+  const BANK_STEPS = { x: 1100, y: 1005 };
+  const HIDEOUT = { x: 470, y: 1560 };
   let bankLena = null;
   M.objective = 'Meet Lena at the Sol&Co Bank steps, downtown';
-  M.target = { x: 1100, y: 1005 };
+  M.target = { ...BANK_STEPS };
   M.update = () => {
     const p = S.player;
-    if (M.stage === 0) {
-      if (distance(p.x, p.y, 1100, 1005) < 60) {
-        bankLena = makePed(S.rng, 1050, 990);
-        bankLena.role = 'mission';
-        bankLena.name = 'Lena Marsh';
-        bankLena.shirt = '#c2452d';
-        S.peds.push(bankLena);
-        M.stage = 1;
-        M.objective = 'Bring a car to Lena — she is done any second';
-        M.target = { x: 1050, y: 990 };
-        S.banner('RENDEZVOUS', 'Lena is inside. Wheels. Now.');
+    switch (M.stage) {
+      case 0: {
+        if (distance(p.x, p.y, BANK_STEPS.x, BANK_STEPS.y) < 60) {
+          bankLena = makePed(S.rng, 1050, 990);
+          bankLena.role = 'mission';
+          bankLena.name = 'Lena Marsh';
+          bankLena.shirt = '#c2452d';
+          S.peds.push(bankLena);
+          M.stage = 1;
+          M.objective = 'Bring a car to Lena — she is done any second';
+          M.target = { x: 1050, y: 990 };
+          S.banner('RENDEZVOUS', 'Lena is inside. Wheels. Now.');
+        }
+        break;
       }
-    } else if (M.stage === 1) {
-      M.target = { x: bankLena.x, y: bankLena.y };
-      if (p.car && distance(p.x, p.y, bankLena.x, bankLena.y) < 52) {
-        const idx = S.peds.indexOf(bankLena);
-        if (idx >= 0) S.peds.splice(idx, 1);
-        bankLena = null;
-        S.passenger = 'Lena Marsh';
-        S.wanted.heat = Math.max(S.wanted.heat, 300);
-        M.stage = 2;
-        M.objective = 'Get Lena to the Old Port hideout — do not stop';
-        M.target = { x: 470, y: 1560 };
-        S.banner('GO GO GO', 'Three stars. The hideout, Dario.');
-        S.audio.missionSting();
-      }
-    } else if (M.stage === 2) {
-      if (p.car && distance(p.x, p.y, 470, 1560) < 48) {
-        S.passenger = null;
-        S.wanted.heat = 0; // Lena knows people. The heat simply goes away.
-        const lena = makePed(S.rng, 446, 1520);
-        lena.role = 'mission';
-        lena.name = 'Lena Marsh';
-        lena.shirt = '#c2452d';
-        S.peds.push(lena);
-        window.setTimeout(() => {
-          const idx = S.peds.indexOf(lena);
+      case 1: {
+        M.target = { x: bankLena.x, y: bankLena.y };
+        if (p.car && distance(p.x, p.y, bankLena.x, bankLena.y) < 52) {
+          const idx = S.peds.indexOf(bankLena);
           if (idx >= 0) S.peds.splice(idx, 1);
-        }, 6000);
-        M.finish();
+          bankLena = null;
+          S.passenger = 'Lena Marsh';
+          S.wanted.heat = Math.max(S.wanted.heat, 300);
+          M.stage = 2;
+          M.objective = 'Get Lena to the Old Port hideout — do not stop';
+          M.target = { ...HIDEOUT };
+          S.banner('GO GO GO', 'Three stars. The hideout, Dario.');
+          S.audio.missionSting();
+        }
+        break;
+      }
+      case 2: {
+        if (p.car && distance(p.x, p.y, HIDEOUT.x, HIDEOUT.y) < 48) {
+          S.passenger = null;
+          S.wanted.heat = 0; // Lena knows people. The heat simply goes away.
+          const lena = makePed(S.rng, 446, 1520);
+          lena.role = 'mission';
+          lena.name = 'Lena Marsh';
+          lena.shirt = '#c2452d';
+          S.peds.push(lena);
+          window.setTimeout(() => {
+            const idx = S.peds.indexOf(lena);
+            if (idx >= 0) S.peds.splice(idx, 1);
+          }, 6000);
+          M.finish();
+        }
+        break;
       }
     }
   };
@@ -246,10 +270,10 @@ function missionGetaway(S, M) {
 }
 
 function missionClearOut(S, M) {
-  const posts = [
+  const POSTS = [
     [1832, 1502], [1978, 1502], [1900, 1642], [1846, 1622], [1962, 1622],
   ];
-  M.guards = posts.map(([x, y]) => {
+  M.guards = POSTS.map(([x, y]) => {
     const g = createGuard(S.rng, x, y);
     S.peds.push(g);
     return g;
@@ -258,8 +282,9 @@ function missionClearOut(S, M) {
   spawnPickup(S, 1790, 1610, 'ammo', 24);
   M.objective = 'Clear the Pier 9 yard (0/5)';
   M.target = { x: 1900, y: 1560 };
+  const stillUp = () => M.guards.filter((g) => g.state !== 'down' && g.state !== 'dead' && S.peds.includes(g)).length;
   M.update = () => {
-    const down = M.guards.filter((g) => g.state === 'down' || g.state === 'dead' || !S.peds.includes(g)).length;
+    const down = M.guards.length - stillUp();
     M.objective = `Clear the Pier 9 yard (${down}/5)`;
     if (down >= 5) M.finish();
   };
@@ -280,6 +305,7 @@ export function createMissionEngine(S) {
     active: null,
     contactPed: null,
 
+    // Put the current contact on the street (or take them off it).
     refreshContact() {
       if (this.contactPed) {
         const idx = S.peds.indexOf(this.contactPed);
@@ -320,6 +346,7 @@ export function createMissionEngine(S) {
       return 'Free roam';
     },
 
+    // E next to the contact opens the briefing dialogue.
     talk() {
       if (this.active || S.storyDone || !this.contactPed) return false;
       if (distance(S.player.x, S.player.y, this.contactPed.x, this.contactPed.y) > 52) return false;
@@ -392,7 +419,10 @@ export function createMissionEngine(S) {
       const M = this.active;
       this.active = null;
       M.cleanup();
-      S.banner('MISSION FAILED', kind === 'busted' ? 'Arrested mid-job. The contact pretends not to know you.' : 'You woke up in hospital. The job is off.');
+      const why = kind === 'busted'
+        ? 'Arrested mid-job. The contact pretends not to know you.'
+        : 'You woke up in hospital. The job is off.';
+      S.banner('MISSION FAILED', why);
       this.refreshContact();
     },
 
